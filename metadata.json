@@ -1,0 +1,6 @@
+{
+  "name": "SalesHub",
+  "description": "An Enterprise CRM with kanban funnel, interactive client/contact lists, and customizable tasks and opportunities.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
