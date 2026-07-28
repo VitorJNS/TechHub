@@ -25,6 +25,9 @@ function buildConnectionString(value: string) {
 const pool = connectionString
   ? new Pool({
       connectionString: buildConnectionString(connectionString),
+      max: 3,
+      connectionTimeoutMillis: 10000,
+      idleTimeoutMillis: 10000,
       ssl: connectionString.includes('sslmode=require')
         ? undefined
         : { rejectUnauthorized: false },
@@ -77,10 +80,7 @@ async function ensureInitialized() {
 }
 
 async function initializeDatabase() {
-  await pool!.query("SELECT pg_advisory_lock(hashtext('crm_vstech_schema_init'))");
-
-  try {
-    if (initialized) return;
+  if (initialized) return;
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS crm_state (
@@ -205,9 +205,6 @@ async function initializeDatabase() {
       "SELECT data FROM crm_state WHERE id = 'default'"
     );
     await seedState(normalizeState(legacy.rows[0]?.data ?? INITIAL_CRM_STATE));
-  }
-  } finally {
-    await pool!.query("SELECT pg_advisory_unlock(hashtext('crm_vstech_schema_init'))");
   }
 }
 

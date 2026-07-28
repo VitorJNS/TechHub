@@ -2,13 +2,22 @@ import { CRMState } from '../data/initialData';
 import { Client, Contact, CRMTask, CRMUser, Interaction, Opportunity } from '../types/crm';
 
 async function apiRequest<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options?.headers ?? {}),
-    },
-  });
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 20000);
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...options,
+      signal: options?.signal ?? controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(options?.headers ?? {}),
+      },
+    });
+  } finally {
+    window.clearTimeout(timeout);
+  }
 
   if (!response.ok) {
     let message = `API respondeu ${response.status}`;
@@ -80,17 +89,6 @@ export const crmApi = {
   resetData: () => post<CRMState>('/api/crm/reset'),
 
   async loadAll(): Promise<CRMState> {
-    const [users, currentUser, clients, contacts, opportunities, interactions, tasks] =
-      await Promise.all([
-        this.getUsers(),
-        this.getCurrentUser(),
-        this.getClients(),
-        this.getContacts(),
-        this.getOpportunities(),
-        this.getInteractions(),
-        this.getTasks(),
-      ]);
-
-    return { users, currentUser, clients, contacts, opportunities, interactions, tasks };
+    return apiRequest<CRMState>('/api/crm/state');
   },
 };
