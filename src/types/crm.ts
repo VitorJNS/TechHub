@@ -41,6 +41,7 @@ export interface Opportunity {
   name: string;
   value: number;
   stage: OpportunityStage;
+  stageOrder?: number;
   probability: number; // 0 to 100
   expectedCloseDate: string;
   description?: string;

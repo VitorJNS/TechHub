@@ -28,6 +28,12 @@ type StageMeta = {
   badgeColor: string;
 };
 
+type DropIndicator = {
+  stage: OpportunityStage;
+  targetId?: string;
+  placement: 'before' | 'after' | 'end';
+};
+
 const STAGES: StageMeta[] = [
   {
     id: 'DISCOVERY',
@@ -81,7 +87,7 @@ export default function OpportunitiesView() {
     contacts,
     interactions,
     addOpportunity,
-    updateOpportunity,
+    moveOpportunity,
     deleteOpportunity,
   } = useCRM();
 
@@ -99,6 +105,7 @@ export default function OpportunitiesView() {
   const [newDescription, setNewDescription] = useState('');
 
   const [draggingCardId, setDraggingCardId] = useState<string | null>(null);
+  const [dropIndicator, setDropIndicator] = useState<DropIndicator | null>(null);
 
   const getClientCompany = (clientId: string) => {
     const client = clients.find((item) => item.id === clientId);
@@ -108,6 +115,11 @@ export default function OpportunitiesView() {
   const getClientName = (clientId: string) => {
     const client = clients.find((item) => item.id === clientId);
     return client ? client.name : 'Lead nao encontrado';
+  };
+
+  const getOpportunityOrder = (opp: Opportunity) => {
+    const fallbackIndex = opportunities.findIndex((item) => item.id === opp.id);
+    return opp.stageOrder ?? (fallbackIndex + 1) * 1000;
   };
 
   const filteredOpps = opportunities.filter((opp) => {
@@ -147,25 +159,82 @@ export default function OpportunitiesView() {
     event.dataTransfer.setData('text/plain', id);
   };
 
-  const handleDragOver = (event: React.DragEvent) => {
+  const handleColumnDragOver = (event: React.DragEvent, targetStage: OpportunityStage) => {
     event.preventDefault();
+    setDropIndicator({ stage: targetStage, placement: 'end' });
   };
 
-  const handleDrop = (event: React.DragEvent, targetStage: OpportunityStage) => {
+  const handleDrop = (
+    event: React.DragEvent,
+    targetStage: OpportunityStage,
+    targetId?: string,
+    placement: 'before' | 'after' = 'after'
+  ) => {
     event.preventDefault();
+    event.stopPropagation();
     const id = event.dataTransfer.getData('text/plain') || draggingCardId;
-    if (id) {
-      updateOpportunity(id, { stage: targetStage });
+    if (id && id !== targetId) {
+      moveOpportunity(id, targetStage, targetId, placement);
     }
     setDraggingCardId(null);
+    setDropIndicator(null);
+  };
+
+  const handleDragEnd = () => {
+    setDraggingCardId(null);
+    setDropIndicator(null);
+  };
+
+  const handleCardDragOver = (
+    event: React.DragEvent,
+    targetStage: OpportunityStage,
+    targetId: string
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const placement = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+    setDropIndicator({ stage: targetStage, targetId, placement });
+  };
+
+  const handleCardDrop = (
+    event: React.DragEvent,
+    targetStage: OpportunityStage,
+    targetId: string
+  ) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const placement = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+    handleDrop(event, targetStage, targetId, placement);
+  };
+
+  const renderDropIndicator = (
+    stage: OpportunityStage,
+    targetId?: string,
+    placement: DropIndicator['placement'] = 'end'
+  ) => {
+    const isActive =
+      draggingCardId &&
+      dropIndicator?.stage === stage &&
+      dropIndicator?.targetId === targetId &&
+      dropIndicator?.placement === placement;
+
+    if (!isActive) return null;
+
+    return (
+      <div className="relative my-1 h-3">
+        <div className="absolute inset-x-1 top-1/2 h-0.5 -translate-y-1/2 rounded-full bg-nature-accent shadow-[0_0_0_3px_rgba(125,132,113,0.16)]" />
+        <div className="absolute left-1 top-1/2 h-2 w-2 -translate-y-1/2 rounded-full border-2 border-white bg-nature-accent shadow-sm" />
+      </div>
+    );
   };
 
   const shiftStage = (opp: Opportunity, direction: 'prev' | 'next') => {
     const currentIdx = STAGES.findIndex((stage) => stage.id === opp.stage);
     if (direction === 'prev' && currentIdx > 0) {
-      updateOpportunity(opp.id, { stage: STAGES[currentIdx - 1].id });
+      moveOpportunity(opp.id, STAGES[currentIdx - 1].id);
     } else if (direction === 'next' && currentIdx < STAGES.length - 1) {
-      updateOpportunity(opp.id, { stage: STAGES[currentIdx + 1].id });
+      moveOpportunity(opp.id, STAGES[currentIdx + 1].id);
     }
   };
 
@@ -255,13 +324,15 @@ export default function OpportunitiesView() {
       <div className="overflow-x-auto pb-4">
         <div className="flex min-w-[1240px] space-x-4 px-1">
           {STAGES.map((col) => {
-            const levelOpps = filteredOpps.filter((opp) => opp.stage === col.id);
+            const levelOpps = filteredOpps
+              .filter((opp) => opp.stage === col.id)
+              .sort((a, b) => getOpportunityOrder(a) - getOpportunityOrder(b));
             const sumValue = levelOpps.reduce((sum, opp) => sum + opp.value, 0);
 
             return (
               <div
                 key={col.id}
-                onDragOver={handleDragOver}
+                onDragOver={(event) => handleColumnDragOver(event, col.id)}
                 onDrop={(event) => handleDrop(event, col.id)}
                 className={`w-80 shrink-0 rounded-2xl border-x border-b border-nature-border-light border-t-4 p-4 shadow-sm transition-colors duration-150 ${col.color} ${
                   draggingCardId ? 'hover:bg-nature-accent/5' : ''
@@ -289,104 +360,112 @@ export default function OpportunitiesView() {
                     const isSelected = opp.id === selectedOpportunityId;
 
                     return (
-                      <div
-                        key={opp.id}
-                        draggable
-                        onDragStart={(event) => handleDragStart(event, opp.id)}
-                        onClick={() => setSelectedOpportunityId(isSelected ? null : opp.id)}
-                        className={`group relative space-y-3 rounded-xl border bg-white p-4 shadow-xs transition-all hover:shadow-md ${
-                          isSelected
-                            ? 'border-nature-accent ring-1 ring-nature-accent/20'
-                            : 'cursor-grab border-nature-border-light active:cursor-grabbing'
-                        }`}
-                      >
-                        <div className="flex items-start justify-between">
-                          <span className="font-mono text-[10px] font-bold uppercase tracking-widest text-nature-text-muted">
-                            {client ? client.company : 'Projeto direto'}
-                          </span>
+                      <React.Fragment key={opp.id}>
+                        {renderDropIndicator(col.id, opp.id, 'before')}
+                        <div
+                          draggable
+                          onDragStart={(event) => handleDragStart(event, opp.id)}
+                          onDragEnd={handleDragEnd}
+                          onDragOver={(event) => handleCardDragOver(event, col.id, opp.id)}
+                          onDrop={(event) => handleCardDrop(event, col.id, opp.id)}
+                          onClick={() => setSelectedOpportunityId(isSelected ? null : opp.id)}
+                          className={`group relative space-y-3 rounded-xl border bg-white p-4 shadow-xs transition-all hover:shadow-md ${
+                            isSelected
+                              ? 'border-nature-accent ring-1 ring-nature-accent/20'
+                              : 'cursor-grab border-nature-border-light active:cursor-grabbing'
+                          }`}
+                        >
+                          <div className="flex items-start justify-between">
+                            <span className="font-mono text-[10px] font-bold uppercase tracking-widest text-nature-text-muted">
+                              {client ? client.company : 'Projeto direto'}
+                            </span>
 
-                          <button
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              if (confirm('Tem certeza de que deseja deletar essa oportunidade de vendas?')) {
-                                deleteOpportunity(opp.id);
-                                if (selectedOpportunityId === opp.id) {
-                                  setSelectedOpportunityId(null);
+                            <button
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                if (confirm('Tem certeza de que deseja deletar essa oportunidade de vendas?')) {
+                                  deleteOpportunity(opp.id);
+                                  if (selectedOpportunityId === opp.id) {
+                                    setSelectedOpportunityId(null);
+                                  }
                                 }
-                              }
-                            }}
-                            title="Excluir oportunidade"
-                            className="rounded p-0.5 text-nature-text-light opacity-0 transition-opacity hover:text-red-500 group-hover:opacity-100"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
-
-                        <div>
-                          <p className="line-clamp-2 text-xs font-bold leading-normal text-nature-text-secondary">
-                            {opp.name}
-                          </p>
-                          <p className="mt-1 font-mono text-sm font-black text-nature-text-primary">
-                            ${opp.value.toLocaleString()}
-                          </p>
-                        </div>
-
-                        <div className="space-y-1">
-                          <div className="flex items-center justify-between font-mono text-[10px] font-bold text-nature-text-muted">
-                            <span>Probabilidade:</span>
-                            <span>{opp.probability}%</span>
+                              }}
+                              title="Excluir oportunidade"
+                              className="rounded p-0.5 text-nature-text-light opacity-0 transition-opacity hover:text-red-500 group-hover:opacity-100"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
                           </div>
-                          <div className="h-1 w-full rounded-full bg-nature-bg">
-                            <div
-                              className={`h-1 rounded-full ${
-                                opp.probability >= 80
-                                  ? 'bg-[#7D8471]'
-                                  : opp.probability >= 50
-                                    ? 'bg-amber-600'
-                                    : 'bg-nature-text-light'
-                              }`}
-                              style={{ width: `${opp.probability}%` }}
-                            />
+
+                          <div>
+                            <p className="line-clamp-2 text-xs font-bold leading-normal text-nature-text-secondary">
+                              {opp.name}
+                            </p>
+                            <p className="mt-1 font-mono text-sm font-black text-nature-text-primary">
+                              ${opp.value.toLocaleString()}
+                            </p>
+                          </div>
+
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between font-mono text-[10px] font-bold text-nature-text-muted">
+                              <span>Probabilidade:</span>
+                              <span>{opp.probability}%</span>
+                            </div>
+                            <div className="h-1 w-full rounded-full bg-nature-bg">
+                              <div
+                                className={`h-1 rounded-full ${
+                                  opp.probability >= 80
+                                    ? 'bg-[#7D8471]'
+                                    : opp.probability >= 50
+                                      ? 'bg-amber-600'
+                                      : 'bg-nature-text-light'
+                                }`}
+                                style={{ width: `${opp.probability}%` }}
+                              />
+                            </div>
+                          </div>
+
+                          <div className="flex items-center justify-between border-t border-nature-border-light pt-1 font-mono text-[10px] font-semibold text-nature-text-light">
+                            <div className="flex items-center space-x-1">
+                              <Calendar className="h-3 w-3 text-nature-text-light" />
+                              <span>Previsto: {opp.expectedCloseDate}</span>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center justify-end space-x-1 border-t border-nature-border-light pt-2 opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100">
+                            <span className="mr-auto text-[9px] font-medium text-nature-text-light">
+                              Estagio:
+                            </span>
+                            <button
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                shiftStage(opp, 'prev');
+                              }}
+                              disabled={col.id === 'DISCOVERY'}
+                              className="cursor-pointer rounded bg-nature-bg p-1 text-nature-text-muted hover:bg-nature-card-dark hover:text-nature-text-primary disabled:opacity-30"
+                              title="Mover anterior"
+                            >
+                              <ChevronLeft className="h-3 w-3" />
+                            </button>
+                            <button
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                shiftStage(opp, 'next');
+                              }}
+                              disabled={col.id === 'LOST'}
+                              className="cursor-pointer rounded bg-nature-bg p-1 text-nature-text-muted hover:bg-nature-card-dark hover:text-nature-text-primary disabled:opacity-30"
+                              title="Mover proximo"
+                            >
+                              <ChevronRight className="h-3 w-3" />
+                            </button>
                           </div>
                         </div>
-
-                        <div className="flex items-center justify-between border-t border-nature-border-light pt-1 font-mono text-[10px] font-semibold text-nature-text-light">
-                          <div className="flex items-center space-x-1">
-                            <Calendar className="h-3 w-3 text-nature-text-light" />
-                            <span>Previsto: {opp.expectedCloseDate}</span>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center justify-end space-x-1 border-t border-nature-border-light pt-2 opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100">
-                          <span className="mr-auto text-[9px] font-medium text-nature-text-light">
-                            Estagio:
-                          </span>
-                          <button
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              shiftStage(opp, 'prev');
-                            }}
-                            disabled={col.id === 'DISCOVERY'}
-                            className="cursor-pointer rounded bg-nature-bg p-1 text-nature-text-muted hover:bg-nature-card-dark hover:text-nature-text-primary disabled:opacity-30"
-                            title="Mover anterior"
-                          >
-                            <ChevronLeft className="h-3 w-3" />
-                          </button>
-                          <button
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              shiftStage(opp, 'next');
-                            }}
-                            disabled={col.id === 'LOST'}
-                            className="cursor-pointer rounded bg-nature-bg p-1 text-nature-text-muted hover:bg-nature-card-dark hover:text-nature-text-primary disabled:opacity-30"
-                            title="Mover proximo"
-                          >
-                            <ChevronRight className="h-3 w-3" />
-                          </button>
-                        </div>
-                      </div>
+                        {renderDropIndicator(col.id, opp.id, 'after')}
+                      </React.Fragment>
                     );
                   })}
+
+                  {renderDropIndicator(col.id)}
 
                   {levelOpps.length === 0 && (
                     <div className="rounded-xl border border-dashed border-nature-border-light p-6 text-center text-[10px] font-semibold text-nature-text-light">

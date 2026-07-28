@@ -341,6 +341,7 @@ interface CRMContextType {
   
   addOpportunity: (opportunity: Omit<Opportunity, 'id' | 'createdAt' | 'updatedAt'>) => Opportunity;
   updateOpportunity: (id: string, updated: Partial<Opportunity>) => void;
+  moveOpportunity: (id: string, targetStage: OpportunityStage, targetId?: string, placement?: 'before' | 'after') => void;
   deleteOpportunity: (id: string) => void;
   
   addInteraction: (clientId: string, type: Interaction['type'], summary: string, details?: string) => Interaction;
@@ -516,9 +517,18 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Opportunity Operations
   const addOpportunity = (newRaw: Omit<Opportunity, 'id' | 'createdAt' | 'updatedAt'>): Opportunity => {
+    const nextStageOrder =
+      Math.max(
+        0,
+        ...opportunities
+          .filter(o => o.stage === newRaw.stage)
+          .map((o, index) => o.stageOrder ?? (index + 1) * 1000)
+      ) + 1000;
+
     const opportunity: Opportunity = {
       ...newRaw,
       id: `op-${Date.now()}`,
+      stageOrder: newRaw.stageOrder ?? nextStageOrder,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -556,6 +566,82 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
       return o;
     }));
+  };
+
+  const moveOpportunity = (
+    id: string,
+    targetStage: OpportunityStage,
+    targetId?: string,
+    placement: 'before' | 'after' = 'after'
+  ) => {
+    setOpportunities(prev => {
+      const moving = prev.find(o => o.id === id);
+      if (!moving) return prev;
+
+      const changedStage = moving.stage !== targetStage;
+      const now = new Date().toISOString();
+      const orderOf = (opportunity: Opportunity, index: number) =>
+        opportunity.stageOrder ?? (index + 1) * 1000;
+      const sortByStageOrder = (a: Opportunity, b: Opportunity) => {
+        const aIndex = prev.findIndex(o => o.id === a.id);
+        const bIndex = prev.findIndex(o => o.id === b.id);
+        return orderOf(a, aIndex) - orderOf(b, bIndex);
+      };
+
+      const targetStageItems = prev
+        .filter(o => o.stage === targetStage && o.id !== id)
+        .sort(sortByStageOrder);
+
+      let insertIndex = targetStageItems.length;
+      if (targetId) {
+        const targetIndex = targetStageItems.findIndex(o => o.id === targetId);
+        if (targetIndex >= 0) {
+          insertIndex = placement === 'before' ? targetIndex : targetIndex + 1;
+        }
+      }
+
+      const moved: Opportunity = {
+        ...moving,
+        stage: targetStage,
+        updatedAt: now,
+      };
+      const reorderedTargetStage = [
+        ...targetStageItems.slice(0, insertIndex),
+        moved,
+        ...targetStageItems.slice(insertIndex),
+      ];
+
+      const targetIds = new Set(reorderedTargetStage.map(o => o.id));
+      const sourceStageNeedsReorder = changedStage ? moving.stage : null;
+      const sourceStageItems = sourceStageNeedsReorder
+        ? prev.filter(o => o.stage === sourceStageNeedsReorder && o.id !== id).sort(sortByStageOrder)
+        : [];
+      const sourceIds = new Set(sourceStageItems.map(o => o.id));
+
+      const orderedUpdates = new Map<string, Opportunity>();
+      reorderedTargetStage.forEach((opportunity, index) => {
+        orderedUpdates.set(opportunity.id, { ...opportunity, stageOrder: (index + 1) * 1000 });
+      });
+      sourceStageItems.forEach((opportunity, index) => {
+        orderedUpdates.set(opportunity.id, { ...opportunity, stageOrder: (index + 1) * 1000 });
+      });
+
+      if (changedStage) {
+        addInteraction(
+          moving.clientId,
+          'NOTE',
+          `Opportunity stage updated: ${moving.name}`,
+          `Moved from ${moving.stage} to ${targetStage}.`
+        );
+      }
+
+      return prev.map(o => {
+        if (targetIds.has(o.id) || sourceIds.has(o.id)) {
+          return orderedUpdates.get(o.id) ?? o;
+        }
+        return o;
+      });
+    });
   };
 
   const deleteOpportunity = (id: string) => {
@@ -641,6 +727,7 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       deleteContact,
       addOpportunity,
       updateOpportunity,
+      moveOpportunity,
       deleteOpportunity,
       addInteraction,
       deleteInteraction,
