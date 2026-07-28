@@ -1,4 +1,6 @@
-let appPromise: Promise<any> | null = null;
+import { createApp } from '../server';
+
+let appPromise: ReturnType<typeof createApp> | null = null;
 
 function restoreExpressPath(req: any) {
   const rawPath = req.query?.path;
@@ -16,9 +18,7 @@ function restoreExpressPath(req: any) {
 export default async function handler(req: any, res: any) {
   try {
     if (!appPromise) {
-      appPromise = import('../server').then(({ createApp }) =>
-        createApp({ serveClient: false })
-      );
+      appPromise = createApp({ serveClient: false });
     }
 
     restoreExpressPath(req);
