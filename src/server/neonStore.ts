@@ -21,9 +21,14 @@ const pool = connectionString
   : null;
 
 let initialized = false;
+let memoryState: CRMState = cloneState(INITIAL_CRM_STATE);
 
 export function isNeonConfigured() {
   return Boolean(pool);
+}
+
+function cloneState(state: CRMState): CRMState {
+  return JSON.parse(JSON.stringify(state));
 }
 
 function normalizeState(state: Partial<CRMState>): CRMState {
@@ -139,6 +144,16 @@ async function ensureInitialized() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
+  `);
+
+  await pool.query(`
+    ALTER TABLE IF EXISTS opportunities
+    ADD COLUMN IF NOT EXISTS stage_order NUMERIC
+  `);
+
+  await pool.query(`
+    ALTER TABLE IF EXISTS users
+    ADD COLUMN IF NOT EXISTS is_current BOOLEAN NOT NULL DEFAULT FALSE
   `);
 
   await pool.query(
@@ -260,6 +275,8 @@ function mapTask(row: any): CRMTask {
 }
 
 export async function readCRMState(): Promise<CRMState> {
+  if (!pool) return cloneState(memoryState);
+
   await ensureInitialized();
   const [users, clients, contacts, opportunities, interactions, tasks] = await Promise.all([
     listUsers(),
@@ -279,6 +296,12 @@ export async function readCRMState(): Promise<CRMState> {
 let usersCurrentIdCache = INITIAL_USERS[0].id;
 
 export async function resetCRMState(): Promise<CRMState> {
+  if (!pool) {
+    memoryState = cloneState(INITIAL_CRM_STATE);
+    usersCurrentIdCache = INITIAL_USERS[0].id;
+    return cloneState(memoryState);
+  }
+
   await ensureInitialized();
   await seedState(INITIAL_CRM_STATE);
   usersCurrentIdCache = INITIAL_USERS[0].id;
@@ -286,6 +309,8 @@ export async function resetCRMState(): Promise<CRMState> {
 }
 
 export async function listUsers() {
+  if (!pool) return [...memoryState.users];
+
   await ensureInitialized();
   const result = await pool!.query(
     'SELECT * FROM users ORDER BY created_at ASC, id ASC'
@@ -296,6 +321,8 @@ export async function listUsers() {
 }
 
 export async function getCurrentUser() {
+  if (!pool) return memoryState.currentUser ? { ...memoryState.currentUser } : null;
+
   await ensureInitialized();
   const result = await pool!.query('SELECT * FROM users WHERE is_current = TRUE LIMIT 1');
   if (result.rows[0]) {
@@ -307,6 +334,20 @@ export async function getCurrentUser() {
 }
 
 export async function upsertUser(user: CRMUser, isCurrent = false) {
+  if (!pool) {
+    if (isCurrent) {
+      usersCurrentIdCache = user.id;
+      memoryState.currentUser = user;
+    }
+    const index = memoryState.users.findIndex((item) => item.id === user.id);
+    if (index >= 0) {
+      memoryState.users[index] = user;
+    } else {
+      memoryState.users.push(user);
+    }
+    return { ...user };
+  }
+
   await ensureInitialized();
   if (isCurrent) {
     await pool!.query('UPDATE users SET is_current = FALSE');
@@ -331,6 +372,14 @@ export async function upsertUser(user: CRMUser, isCurrent = false) {
 }
 
 export async function setCurrentUser(id: string | null) {
+  if (!pool) {
+    memoryState.currentUser = id
+      ? memoryState.users.find((user) => user.id === id) ?? null
+      : null;
+    if (id) usersCurrentIdCache = id;
+    return;
+  }
+
   await ensureInitialized();
   await pool!.query('UPDATE users SET is_current = FALSE');
   if (id) {
@@ -340,12 +389,24 @@ export async function setCurrentUser(id: string | null) {
 }
 
 export async function listClients() {
+  if (!pool) return [...memoryState.clients];
+
   await ensureInitialized();
   const result = await pool!.query('SELECT * FROM clients ORDER BY created_at DESC, id DESC');
   return result.rows.map(mapClient);
 }
 
 export async function upsertClient(client: Client) {
+  if (!pool) {
+    const index = memoryState.clients.findIndex((item) => item.id === client.id);
+    if (index >= 0) {
+      memoryState.clients[index] = client;
+    } else {
+      memoryState.clients.unshift(client);
+    }
+    return { ...client };
+  }
+
   await ensureInitialized();
   const result = await pool!.query(
     `
@@ -390,17 +451,37 @@ export async function patchClient(id: string, updated: Partial<Client>) {
 }
 
 export async function deleteClientById(id: string) {
+  if (!pool) {
+    memoryState.clients = memoryState.clients.filter((client) => client.id !== id);
+    memoryState.contacts = memoryState.contacts.filter((contact) => contact.clientId !== id);
+    memoryState.opportunities = memoryState.opportunities.filter((opportunity) => opportunity.clientId !== id);
+    memoryState.interactions = memoryState.interactions.filter((interaction) => interaction.clientId !== id);
+    return;
+  }
+
   await ensureInitialized();
   await pool!.query('DELETE FROM clients WHERE id = $1', [id]);
 }
 
 export async function listContacts() {
+  if (!pool) return [...memoryState.contacts];
+
   await ensureInitialized();
   const result = await pool!.query('SELECT * FROM contacts ORDER BY created_at DESC, id DESC');
   return result.rows.map(mapContact);
 }
 
 export async function upsertContact(contact: Contact) {
+  if (!pool) {
+    const index = memoryState.contacts.findIndex((item) => item.id === contact.id);
+    if (index >= 0) {
+      memoryState.contacts[index] = contact;
+    } else {
+      memoryState.contacts.unshift(contact);
+    }
+    return { ...contact };
+  }
+
   await ensureInitialized();
   const result = await pool!.query(
     `
@@ -439,11 +520,18 @@ export async function patchContact(id: string, updated: Partial<Contact>) {
 }
 
 export async function deleteContactById(id: string) {
+  if (!pool) {
+    memoryState.contacts = memoryState.contacts.filter((contact) => contact.id !== id);
+    return;
+  }
+
   await ensureInitialized();
   await pool!.query('DELETE FROM contacts WHERE id = $1', [id]);
 }
 
 export async function listOpportunities() {
+  if (!pool) return [...memoryState.opportunities];
+
   await ensureInitialized();
   const result = await pool!.query(
     'SELECT * FROM opportunities ORDER BY stage_order ASC NULLS LAST, created_at DESC, id DESC'
@@ -452,6 +540,16 @@ export async function listOpportunities() {
 }
 
 export async function upsertOpportunity(opportunity: Opportunity) {
+  if (!pool) {
+    const index = memoryState.opportunities.findIndex((item) => item.id === opportunity.id);
+    if (index >= 0) {
+      memoryState.opportunities[index] = opportunity;
+    } else {
+      memoryState.opportunities.unshift(opportunity);
+    }
+    return { ...opportunity };
+  }
+
   await ensureInitialized();
   const result = await pool!.query(
     `
@@ -506,17 +604,34 @@ export async function upsertOpportunities(opportunities: Opportunity[]) {
 }
 
 export async function deleteOpportunityById(id: string) {
+  if (!pool) {
+    memoryState.opportunities = memoryState.opportunities.filter((opportunity) => opportunity.id !== id);
+    return;
+  }
+
   await ensureInitialized();
   await pool!.query('DELETE FROM opportunities WHERE id = $1', [id]);
 }
 
 export async function listInteractions() {
+  if (!pool) return [...memoryState.interactions];
+
   await ensureInitialized();
   const result = await pool!.query('SELECT * FROM interactions ORDER BY date DESC, id DESC');
   return result.rows.map(mapInteraction);
 }
 
 export async function upsertInteraction(interaction: Interaction) {
+  if (!pool) {
+    const index = memoryState.interactions.findIndex((item) => item.id === interaction.id);
+    if (index >= 0) {
+      memoryState.interactions[index] = interaction;
+    } else {
+      memoryState.interactions.unshift(interaction);
+    }
+    return { ...interaction };
+  }
+
   await ensureInitialized();
   const result = await pool!.query(
     `
@@ -545,17 +660,34 @@ export async function upsertInteraction(interaction: Interaction) {
 }
 
 export async function deleteInteractionById(id: string) {
+  if (!pool) {
+    memoryState.interactions = memoryState.interactions.filter((interaction) => interaction.id !== id);
+    return;
+  }
+
   await ensureInitialized();
   await pool!.query('DELETE FROM interactions WHERE id = $1', [id]);
 }
 
 export async function listTasks() {
+  if (!pool) return [...memoryState.tasks];
+
   await ensureInitialized();
   const result = await pool!.query('SELECT * FROM tasks ORDER BY due_date ASC, id DESC');
   return result.rows.map(mapTask);
 }
 
 export async function upsertTask(task: CRMTask) {
+  if (!pool) {
+    const index = memoryState.tasks.findIndex((item) => item.id === task.id);
+    if (index >= 0) {
+      memoryState.tasks[index] = task;
+    } else {
+      memoryState.tasks.unshift(task);
+    }
+    return { ...task };
+  }
+
   await ensureInitialized();
   const result = await pool!.query(
     `
@@ -596,6 +728,11 @@ export async function patchTask(id: string, updated: Partial<CRMTask>) {
 }
 
 export async function deleteTaskById(id: string) {
+  if (!pool) {
+    memoryState.tasks = memoryState.tasks.filter((task) => task.id !== id);
+    return;
+  }
+
   await ensureInitialized();
   await pool!.query('DELETE FROM tasks WHERE id = $1', [id]);
 }
