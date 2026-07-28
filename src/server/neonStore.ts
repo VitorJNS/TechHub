@@ -16,9 +16,15 @@ const connectionString =
   process.env.POSTGRES_PRISMA_URL ||
   process.env.POSTGRES_URL_NON_POOLING;
 
+function buildConnectionString(value: string) {
+  const url = new URL(value);
+  url.searchParams.delete('channel_binding');
+  return url.toString();
+}
+
 const pool = connectionString
   ? new Pool({
-      connectionString,
+      connectionString: buildConnectionString(connectionString),
       ssl: connectionString.includes('sslmode=require')
         ? undefined
         : { rejectUnauthorized: false },
