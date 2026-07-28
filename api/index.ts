@@ -1,4 +1,8 @@
-import type { Express, Response } from 'express';
+import express, { type Express, type Response } from 'express';
+import dotenv from 'dotenv';
+import * as store from '../src/server/neonStore';
+
+dotenv.config();
 
 let appPromise: Promise<Express> | null = null;
 
@@ -24,14 +28,6 @@ function sendError(res: Response, error: any, fallback: string) {
 }
 
 async function createApiApp(): Promise<Express> {
-  const [{ default: express }, { default: dotenv }, store] = await Promise.all([
-    import('express'),
-    import('dotenv'),
-    import('../src/server/neonStore.ts'),
-  ]);
-
-  dotenv.config();
-
   const app = express();
   app.use(express.json());
 
