@@ -65,10 +65,28 @@ export async function createApp(options: { serveClient?: boolean } = {}) {
   });
 
   app.get("/api/crm/health", async (_req, res) => {
-    res.json({
-      ok: true,
-      database: isNeonConfigured() ? "configured" : "missing",
-    });
+    try {
+      const state = await readCRMState();
+      res.json({
+        ok: true,
+        database: isNeonConfigured() ? "ready" : "memory",
+        counts: {
+          users: state.users.length,
+          clients: state.clients.length,
+          contacts: state.contacts.length,
+          opportunities: state.opportunities.length,
+          interactions: state.interactions.length,
+          tasks: state.tasks.length,
+        },
+      });
+    } catch (error: any) {
+      console.error("[CRM Health Error]", error);
+      res.status(500).json({
+        ok: false,
+        database: isNeonConfigured() ? "configured_with_error" : "missing",
+        message: error.message || "Nao foi possivel inicializar o banco.",
+      });
+    }
   });
 
   app.get("/api/crm/state", async (_req, res) => {

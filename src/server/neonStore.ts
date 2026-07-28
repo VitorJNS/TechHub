@@ -26,6 +26,7 @@ const pool = connectionString
   : null;
 
 let initialized = false;
+let initializationPromise: Promise<void> | null = null;
 let memoryState: CRMState = cloneState(INITIAL_CRM_STATE);
 
 export function isNeonConfigured() {
@@ -54,6 +55,26 @@ async function ensureInitialized() {
   }
 
   if (initialized) return;
+
+  if (!initializationPromise) {
+    initializationPromise = initializeDatabase()
+      .catch((error) => {
+        initialized = false;
+        throw error;
+      })
+      .finally(() => {
+        initializationPromise = null;
+      });
+  }
+
+  await initializationPromise;
+}
+
+async function initializeDatabase() {
+  await pool!.query("SELECT pg_advisory_lock(hashtext('crm_vstech_schema_init'))");
+
+  try {
+    if (initialized) return;
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS crm_state (
@@ -178,6 +199,9 @@ async function ensureInitialized() {
       "SELECT data FROM crm_state WHERE id = 'default'"
     );
     await seedState(normalizeState(legacy.rows[0]?.data ?? INITIAL_CRM_STATE));
+  }
+  } finally {
+    await pool!.query("SELECT pg_advisory_unlock(hashtext('crm_vstech_schema_init'))");
   }
 }
 
