@@ -51,9 +51,9 @@ function getCleanPhoneNumber(phone: string): string {
   return phone.replace(/\D/g, "");
 }
 
-async function startServer() {
+export async function createApp(options: { serveClient?: boolean } = {}) {
+  const { serveClient = true } = options;
   const app = express();
-  const PORT = Number(process.env.PORT) || 3000;
 
   // Enable JSON request bodies
   app.use(express.json());
@@ -520,6 +520,10 @@ async function startServer() {
   });
 
   // Vite middleware for development
+  if (!serveClient) {
+    return app;
+  }
+
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { 
@@ -537,9 +541,18 @@ async function startServer() {
     });
   }
 
+  return app;
+}
+
+async function startServer() {
+  const app = await createApp();
+  const PORT = Number(process.env.PORT) || 3000;
+
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}

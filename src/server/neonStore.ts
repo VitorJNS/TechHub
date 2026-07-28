@@ -9,7 +9,12 @@ import { Client, Contact, CRMTask, CRMUser, Interaction, Opportunity } from '../
 
 const { Pool } = pg;
 
-const connectionString = process.env.DB_CONNECTION;
+const connectionString =
+  process.env.DB_CONNECTION ||
+  process.env.DATABASE_URL ||
+  process.env.POSTGRES_URL ||
+  process.env.POSTGRES_PRISMA_URL ||
+  process.env.POSTGRES_URL_NON_POOLING;
 
 const pool = connectionString
   ? new Pool({
@@ -45,7 +50,7 @@ function normalizeState(state: Partial<CRMState>): CRMState {
 
 async function ensureInitialized() {
   if (!pool) {
-    throw new Error('DB_CONNECTION nao configurada.');
+    throw new Error('DB_CONNECTION, DATABASE_URL ou POSTGRES_URL nao configurada.');
   }
 
   if (initialized) return;
