@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useCallback, useContext, useRef, useState, useEffect } from 'react';
 import { 
   CRMUser, 
   Client, 
@@ -10,6 +10,7 @@ import {
   OpportunityStage,
   SalesGrowthPoint
 } from '../types/crm';
+import { crmApi } from '../services/crmApi';
 
 // Mock Avatars
 const AVATARS = [
@@ -324,6 +325,11 @@ interface CRMContextType {
   interactions: Interaction[];
   tasks: CRMTask[];
   salesGrowth: SalesGrowthPoint[];
+  isLoading: boolean;
+  syncStatus: 'loading' | 'syncing' | 'saved' | 'error';
+  syncError: string | null;
+  reloadData: () => Promise<void>;
+  retrySync: () => void;
   
   // Actions
   login: (email: string) => boolean;
@@ -397,6 +403,86 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   });
 
   const [salesGrowth] = useState<SalesGrowthPoint[]>(INITIAL_SALES_GROWTH);
+  const [isLoading, setIsLoading] = useState(true);
+  const [syncStatus, setSyncStatus] = useState<'loading' | 'syncing' | 'saved' | 'error'>('loading');
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const pendingSyncs = useRef(0);
+  const lastFailedSync = useRef<(() => Promise<unknown>) | null>(null);
+
+  const applyState = useCallback((state: {
+    users?: CRMUser[];
+    currentUser?: CRMUser | null;
+    clients?: Client[];
+    contacts?: Contact[];
+    opportunities?: Opportunity[];
+    interactions?: Interaction[];
+    tasks?: CRMTask[];
+  }) => {
+    setUsers(state.users ?? INITIAL_USERS);
+    setCurrentUser(state.currentUser ?? state.users?.[0] ?? INITIAL_USERS[0]);
+    setClients(state.clients ?? INITIAL_CLIENTS);
+    setContacts(state.contacts ?? INITIAL_CONTACTS);
+    setOpportunities(state.opportunities ?? INITIAL_OPPORTUNITIES);
+    setInteractions(state.interactions ?? INITIAL_INTERACTIONS);
+    setTasks(state.tasks ?? INITIAL_TASKS);
+  }, []);
+
+  const reloadData = useCallback(async () => {
+    setIsLoading(true);
+    setSyncStatus('loading');
+    setSyncError(null);
+
+    try {
+      const state = await crmApi.loadAll();
+      applyState(state);
+      setSyncStatus('saved');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Nao foi possivel carregar os dados.';
+      setSyncStatus('error');
+      setSyncError(message);
+      console.warn('[CRM] Usando dados locais porque a API nao respondeu.', error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [applyState]);
+
+  useEffect(() => {
+    reloadData();
+  }, [reloadData]);
+
+  const syncRequest = useCallback((request: () => Promise<unknown>) => {
+    pendingSyncs.current += 1;
+    setSyncStatus('syncing');
+    setSyncError(null);
+
+    request()
+      .then(() => {
+        if (lastFailedSync.current === request) {
+          lastFailedSync.current = null;
+        }
+        if (pendingSyncs.current <= 1 && !lastFailedSync.current) {
+          setSyncStatus('saved');
+        }
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : 'Nao foi possivel salvar.';
+        lastFailedSync.current = request;
+        setSyncStatus('error');
+        setSyncError(message);
+        console.warn('[CRM] Falha ao sincronizar. Dados mantidos localmente.', error);
+      })
+      .finally(() => {
+        pendingSyncs.current = Math.max(0, pendingSyncs.current - 1);
+      });
+  }, []);
+
+  const retrySync = useCallback(() => {
+    if (lastFailedSync.current) {
+      syncRequest(lastFailedSync.current);
+    } else {
+      reloadData();
+    }
+  }, [reloadData, syncRequest]);
 
   // Sync state to local storage on changes
   useEffect(() => {
@@ -436,6 +522,7 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const found = users.find(u => u.email.toLowerCase().trim() === email.toLowerCase().trim());
     if (found) {
       setCurrentUser(found);
+      syncRequest(() => crmApi.setCurrentUser(found.id));
       return true;
     }
     return false;
@@ -443,12 +530,14 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const logout = () => {
     setCurrentUser(null);
+    syncRequest(() => crmApi.setCurrentUser(null));
   };
 
   const setCurrentUserById = (id: string) => {
     const found = users.find(u => u.id === id);
     if (found) {
       setCurrentUser(found);
+      syncRequest(() => crmApi.setCurrentUser(found.id));
     }
   };
 
@@ -457,6 +546,7 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const avatarUrl = AVATARS[users.length % AVATARS.length];
     const newUser: CRMUser = { id, name, email, role, avatarUrl };
     setUsers(prev => [...prev, newUser]);
+    syncRequest(() => crmApi.saveUser(newUser));
     return newUser;
   };
 
@@ -469,6 +559,7 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       lastContact: 'Just now',
     };
     setClients(prev => [client, ...prev]);
+    syncRequest(() => crmApi.saveClient(client));
     
     // Auto Interaction
     if (currentUser) {
@@ -479,6 +570,7 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const updateClient = (id: string, updated: Partial<Client>) => {
     setClients(prev => prev.map(c => c.id === id ? { ...c, ...updated } : c));
+    syncRequest(() => crmApi.updateClient(id, updated));
   };
 
   const deleteClient = (id: string) => {
@@ -486,6 +578,7 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Cascade-delete related contacts/opportunities
     setContacts(prev => prev.filter(co => co.clientId !== id));
     setOpportunities(prev => prev.filter(op => op.clientId !== id));
+    syncRequest(() => crmApi.deleteClient(id));
   };
 
   // Contact Operations
@@ -496,6 +589,7 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       createdAt: new Date().toISOString(),
     };
     setContacts(prev => [contact, ...prev]);
+    syncRequest(() => crmApi.saveContact(contact));
     
     // Update Client last contacted
     const dateFormatted = new Date().toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' });
@@ -509,10 +603,12 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const updateContact = (id: string, updated: Partial<Contact>) => {
     setContacts(prev => prev.map(c => c.id === id ? { ...c, ...updated } : c));
+    syncRequest(() => crmApi.updateContact(id, updated));
   };
 
   const deleteContact = (id: string) => {
     setContacts(prev => prev.filter(c => c.id !== id));
+    syncRequest(() => crmApi.deleteContact(id));
   };
 
   // Opportunity Operations
@@ -533,6 +629,7 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       updatedAt: new Date().toISOString(),
     };
     setOpportunities(prev => [opportunity, ...prev]);
+    syncRequest(() => crmApi.saveOpportunity(opportunity));
 
     // Log Interaction
     addInteraction(
@@ -553,6 +650,7 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ...updated, 
           updatedAt: new Date().toISOString() 
         };
+        syncRequest(() => crmApi.updateOpportunity(id, updated));
         // If stage changed, log interaction
         if (updated.stage && updated.stage !== o.stage) {
           addInteraction(
@@ -574,78 +672,73 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     targetId?: string,
     placement: 'before' | 'after' = 'after'
   ) => {
-    setOpportunities(prev => {
-      const moving = prev.find(o => o.id === id);
-      if (!moving) return prev;
+    const moving = opportunities.find(o => o.id === id);
+    if (!moving) return;
 
-      const changedStage = moving.stage !== targetStage;
-      const now = new Date().toISOString();
-      const orderOf = (opportunity: Opportunity, index: number) =>
-        opportunity.stageOrder ?? (index + 1) * 1000;
-      const sortByStageOrder = (a: Opportunity, b: Opportunity) => {
-        const aIndex = prev.findIndex(o => o.id === a.id);
-        const bIndex = prev.findIndex(o => o.id === b.id);
-        return orderOf(a, aIndex) - orderOf(b, bIndex);
-      };
+    const changedStage = moving.stage !== targetStage;
+    const now = new Date().toISOString();
+    const orderOf = (opportunity: Opportunity, index: number) =>
+      opportunity.stageOrder ?? (index + 1) * 1000;
+    const sortByStageOrder = (a: Opportunity, b: Opportunity) => {
+      const aIndex = opportunities.findIndex(o => o.id === a.id);
+      const bIndex = opportunities.findIndex(o => o.id === b.id);
+      return orderOf(a, aIndex) - orderOf(b, bIndex);
+    };
 
-      const targetStageItems = prev
-        .filter(o => o.stage === targetStage && o.id !== id)
-        .sort(sortByStageOrder);
+    const targetStageItems = opportunities
+      .filter(o => o.stage === targetStage && o.id !== id)
+      .sort(sortByStageOrder);
 
-      let insertIndex = targetStageItems.length;
-      if (targetId) {
-        const targetIndex = targetStageItems.findIndex(o => o.id === targetId);
-        if (targetIndex >= 0) {
-          insertIndex = placement === 'before' ? targetIndex : targetIndex + 1;
-        }
+    let insertIndex = targetStageItems.length;
+    if (targetId) {
+      const targetIndex = targetStageItems.findIndex(o => o.id === targetId);
+      if (targetIndex >= 0) {
+        insertIndex = placement === 'before' ? targetIndex : targetIndex + 1;
       }
+    }
 
-      const moved: Opportunity = {
-        ...moving,
-        stage: targetStage,
-        updatedAt: now,
-      };
-      const reorderedTargetStage = [
-        ...targetStageItems.slice(0, insertIndex),
-        moved,
-        ...targetStageItems.slice(insertIndex),
-      ];
+    const moved: Opportunity = {
+      ...moving,
+      stage: targetStage,
+      updatedAt: now,
+    };
+    const reorderedTargetStage = [
+      ...targetStageItems.slice(0, insertIndex),
+      moved,
+      ...targetStageItems.slice(insertIndex),
+    ];
+    const sourceStageItems = changedStage
+      ? opportunities.filter(o => o.stage === moving.stage && o.id !== id).sort(sortByStageOrder)
+      : [];
 
-      const targetIds = new Set(reorderedTargetStage.map(o => o.id));
-      const sourceStageNeedsReorder = changedStage ? moving.stage : null;
-      const sourceStageItems = sourceStageNeedsReorder
-        ? prev.filter(o => o.stage === sourceStageNeedsReorder && o.id !== id).sort(sortByStageOrder)
-        : [];
-      const sourceIds = new Set(sourceStageItems.map(o => o.id));
+    const updates = [
+      ...reorderedTargetStage.map((opportunity, index) => ({
+        ...opportunity,
+        stageOrder: (index + 1) * 1000,
+      })),
+      ...sourceStageItems.map((opportunity, index) => ({
+        ...opportunity,
+        stageOrder: (index + 1) * 1000,
+      })),
+    ];
+    const updatesById = new Map(updates.map((opportunity) => [opportunity.id, opportunity]));
 
-      const orderedUpdates = new Map<string, Opportunity>();
-      reorderedTargetStage.forEach((opportunity, index) => {
-        orderedUpdates.set(opportunity.id, { ...opportunity, stageOrder: (index + 1) * 1000 });
-      });
-      sourceStageItems.forEach((opportunity, index) => {
-        orderedUpdates.set(opportunity.id, { ...opportunity, stageOrder: (index + 1) * 1000 });
-      });
+    setOpportunities(prev => prev.map(o => updatesById.get(o.id) ?? o));
+    syncRequest(() => crmApi.saveOpportunitiesBulk(updates));
 
-      if (changedStage) {
-        addInteraction(
-          moving.clientId,
-          'NOTE',
-          `Opportunity stage updated: ${moving.name}`,
-          `Moved from ${moving.stage} to ${targetStage}.`
-        );
-      }
-
-      return prev.map(o => {
-        if (targetIds.has(o.id) || sourceIds.has(o.id)) {
-          return orderedUpdates.get(o.id) ?? o;
-        }
-        return o;
-      });
-    });
+    if (changedStage) {
+      addInteraction(
+        moving.clientId,
+        'NOTE',
+        `Opportunity stage updated: ${moving.name}`,
+        `Moved from ${moving.stage} to ${targetStage}.`
+      );
+    }
   };
 
   const deleteOpportunity = (id: string) => {
     setOpportunities(prev => prev.filter(o => o.id !== id));
+    syncRequest(() => crmApi.deleteOpportunity(id));
   };
 
   // Interaction Operations
@@ -660,6 +753,7 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       date: new Date().toISOString(),
     };
     setInteractions(prev => [interaction, ...prev]);
+    syncRequest(() => crmApi.saveInteraction(interaction));
     
     // Update Client last contact
     const dateFormatted = new Date().toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' });
@@ -670,6 +764,7 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const deleteInteraction = (id: string) => {
     setInteractions(prev => prev.filter(i => i.id !== id));
+    syncRequest(() => crmApi.deleteInteraction(id));
   };
 
   // Task Operations
@@ -680,19 +775,25 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       completed: false
     };
     setTasks(prev => [task, ...prev]);
+    syncRequest(() => crmApi.saveTask(task));
     return task;
   };
 
   const toggleTaskCompleted = (id: string) => {
-    setTasks(prev => prev.map(t => t.id === id ? { ...t, completed: !t.completed } : t));
+    const task = tasks.find(t => t.id === id);
+    const completed = !(task?.completed ?? false);
+    setTasks(prev => prev.map(t => t.id === id ? { ...t, completed } : t));
+    syncRequest(() => crmApi.updateTask(id, { completed }));
   };
 
   const deleteTask = (id: string) => {
     setTasks(prev => prev.filter(t => t.id !== id));
+    syncRequest(() => crmApi.deleteTask(id));
   };
 
   const updateTask = (id: string, updated: Partial<CRMTask>) => {
     setTasks(prev => prev.map(t => t.id === id ? { ...t, ...updated } : t));
+    syncRequest(() => crmApi.updateTask(id, updated));
   };
 
   const resetData = () => {
@@ -703,6 +804,8 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setOpportunities(INITIAL_OPPORTUNITIES);
     setInteractions(INITIAL_INTERACTIONS);
     setTasks(INITIAL_TASKS);
+
+    syncRequest(() => crmApi.resetData());
   };
 
   return (
@@ -715,6 +818,11 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       interactions,
       tasks,
       salesGrowth,
+      isLoading,
+      syncStatus,
+      syncError,
+      reloadData,
+      retrySync,
       login,
       logout,
       setCurrentUserById,

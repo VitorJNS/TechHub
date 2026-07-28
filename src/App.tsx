@@ -11,7 +11,7 @@ import TasksView from './components/TasksView';
 import SettingsView from './components/SettingsView';
 
 function MainAppShell() {
-  const { currentUser } = useCRM();
+  const { currentUser, isLoading, syncStatus, syncError, retrySync } = useCRM();
   const [currentTab, setCurrentTab] = useState<string>('dashboard');
   const [searchTerm, setSearchTerm] = useState<string>('');
 
@@ -37,6 +37,37 @@ function MainAppShell() {
         break;
     }
   };
+
+  if (isLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-nature-bg p-6 font-sans text-nature-text-primary">
+        <div className="rounded-2xl border border-nature-border bg-white px-6 py-5 text-center shadow-sm">
+          <div className="mx-auto mb-3 h-8 w-8 animate-spin rounded-full border-2 border-nature-border border-t-nature-accent" />
+          <p className="text-sm font-bold">Carregando CRM</p>
+          <p className="mt-1 text-xs text-nature-text-muted">Buscando usuarios, clientes, funil e tarefas.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (syncStatus === 'error' && !currentUser) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-nature-bg p-6 font-sans text-nature-text-primary">
+        <div className="max-w-md rounded-2xl border border-red-100 bg-white px-6 py-5 text-center shadow-sm">
+          <p className="text-sm font-bold text-red-700">Nao foi possivel carregar o CRM</p>
+          <p className="mt-2 text-xs leading-relaxed text-nature-text-muted">
+            {syncError || 'Verifique a conexao com a API e tente novamente.'}
+          </p>
+          <button
+            onClick={retrySync}
+            className="mt-4 rounded-lg bg-nature-accent px-4 py-2 text-xs font-bold text-white hover:bg-nature-accent-hover"
+          >
+            Tentar novamente
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   // If there is no authenticated corporate user, represent the login portal
   if (!currentUser) {

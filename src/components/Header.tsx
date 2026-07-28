@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useCRM } from '../context/CRMContext';
-import { Search, Bell, HelpCircle, LogOut, RefreshCw, User, Users, ShieldAlert } from 'lucide-react';
+import { Search, Bell, HelpCircle, LogOut, RefreshCw, Users, ShieldAlert, CheckCircle2 } from 'lucide-react';
 
 interface HeaderProps {
   searchTerm: string;
@@ -9,7 +9,17 @@ interface HeaderProps {
 }
 
 export default function Header({ searchTerm, setSearchTerm, onNavigate }: HeaderProps) {
-  const { currentUser, users, setCurrentUserById, logout, tasks } = useCRM();
+  const {
+    currentUser,
+    users,
+    setCurrentUserById,
+    logout,
+    tasks,
+    isLoading,
+    syncStatus,
+    syncError,
+    retrySync,
+  } = useCRM();
   const [profileOpen, setProfileOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
 
@@ -47,6 +57,41 @@ export default function Header({ searchTerm, setSearchTerm, onNavigate }: Header
 
       {/* Right Utilities */}
       <div className="flex items-center space-x-4">
+        <div
+          className={`hidden items-center gap-2 rounded-full border px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider md:inline-flex ${
+            syncStatus === 'error'
+              ? 'border-red-100 bg-red-50 text-red-700'
+              : syncStatus === 'syncing' || syncStatus === 'loading'
+                ? 'border-nature-border bg-white text-nature-text-muted'
+                : 'border-emerald-100 bg-emerald-50 text-emerald-700'
+          }`}
+          title={syncError || undefined}
+        >
+          {syncStatus === 'error' ? (
+            <ShieldAlert className="h-3.5 w-3.5" />
+          ) : syncStatus === 'syncing' || syncStatus === 'loading' ? (
+            <RefreshCw className={`h-3.5 w-3.5 ${isLoading || syncStatus === 'syncing' ? 'animate-spin' : ''}`} />
+          ) : (
+            <CheckCircle2 className="h-3.5 w-3.5" />
+          )}
+          <span>
+            {syncStatus === 'error'
+              ? 'Erro ao salvar'
+              : syncStatus === 'loading'
+                ? 'Carregando'
+                : syncStatus === 'syncing'
+                  ? 'Sincronizando'
+                  : 'Salvo'}
+          </span>
+          {syncStatus === 'error' && (
+            <button
+              onClick={retrySync}
+              className="rounded-full border border-red-200 bg-white px-2 py-0.5 text-[9px] font-black text-red-700 hover:bg-red-50"
+            >
+              Tentar novamente
+            </button>
+          )}
+        </div>
         
         {/* Help Center */}
         <button 
